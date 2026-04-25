@@ -189,17 +189,17 @@ advnt/
 │       ├── __init__.py
 │       ├── validation.py
 │       ├── weights.py
-│       ├── importances.py
-│       ├── pseudo_labeling.py
+│       ├── importances.py  # includes SHAP diagnostics helpers
+│       ├── ssl.py
 │       ├── changepoint.py
 │       ├── neutralization.py
-│       ├── shap_diagnostics.py
+│       ├── models.py
 │       └── utils.py
 └── tests/
     ├── test_validation.py
     ├── test_weights.py
     ├── test_importances.py
-    ├── test_pseudo_labeling.py
+    ├── test_ssl.py
     └── test_changepoint.py
 ```
 
@@ -238,7 +238,7 @@ Implement:
 - rolling-window adversarial validation for time series
 - changepoint score curves
 - feature neutralization via residualization
-- SHAP diagnostics as optional dependency
+- SHAP diagnostics as optional dependency (in `importances.py`)
 
 ### Phase 4: Optional Advanced Modules
 
@@ -269,7 +269,7 @@ Use numpy, pandas, and sklearn as the core dependency stack.
 
 Optional dependencies should stay optional:
 
-- `shap`
+- `shap` (used by helpers in `importances.py`)
 - `lightgbm`
 - `xgboost`
 - `torch`
