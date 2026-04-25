@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
+
 import numpy as np
 import pandas as pd
 
 from sklearn.base import BaseEstimator, clone
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
 from .importances import extract_model_importances
+from .sample_weights import compute_density_ratio_weights
 
 
 class AdversarialValidator(BaseEstimator):
@@ -33,10 +36,19 @@ class AdversarialValidator(BaseEstimator):
         self.eps = eps
 
     def _default_model(self):
-        return RandomForestClassifier(
+        if importlib.util.find_spec("lightgbm") is None:
+            raise ImportError(
+                "lightgbm is required for the default model. "
+                "Install lightgbm or pass `model=` explicitly."
+            )
+
+        lgbm = importlib.import_module("lightgbm")
+        return lgbm.LGBMClassifier(
             n_estimators=300,
-            min_samples_leaf=5,
-            n_jobs=-1,
+            learning_rate=0.05,
+            num_leaves=31,
+            subsample=0.9,
+            colsample_bytree=0.9,
             random_state=self.random_state,
         )
 
@@ -118,17 +130,12 @@ class AdversarialValidator(BaseEstimator):
         )
 
         if self.compute_sample_weights:
-            p = np.clip(self.oof_train_proba_, self.eps, 1.0 - self.eps)
-            w = p / (1.0 - p)
-
-            if self.weight_clip is not None:
-                lo, hi = self.weight_clip
-                w = np.clip(w, lo, hi)
-
-            if self.normalize_weights:
-                w = w / np.mean(w)
-
-            self.sample_weights_ = w
+            self.sample_weights_ = compute_density_ratio_weights(
+                self.oof_train_proba_,
+                eps=self.eps,
+                clip=self.weight_clip,
+                normalize=self.normalize_weights,
+            )
         else:
             self.sample_weights_ = None
 
