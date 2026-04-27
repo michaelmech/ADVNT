@@ -29,3 +29,29 @@ def extract_model_importances(model, feature_names=None):
     )
     frame["rank"] = frame["importance"].rank(method="dense", ascending=False).astype(int)
     return frame.sort_values("importance", ascending=False, ignore_index=True)
+
+
+
+def extract_model_importances_from_train_test(
+    X_train,
+    X_test,
+    *,
+    model=None,
+    cv=None,
+    metric="roc_auc",
+    random_state=42,
+):
+    """Run adversarial validation and return model-based feature importances."""
+    from ..workflows import run_adversarial_validation_workflow
+
+    artifacts = run_adversarial_validation_workflow(
+        X_train,
+        X_test,
+        model=model,
+        cv=cv,
+        metric=metric,
+        random_state=random_state,
+        compute_sample_weights=False,
+    )
+
+    return artifacts["feature_importances"]
