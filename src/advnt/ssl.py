@@ -27,3 +27,30 @@ def select_safe_pseudo_labels(test_proba, threshold=0.1):
         "pseudo_labels": labels[mask],
         "confidence": np.maximum(proba[mask], 1.0 - proba[mask]),
     }
+
+
+
+def select_safe_pseudo_labels_from_train_test(
+    X_train,
+    X_test,
+    *,
+    model=None,
+    cv=None,
+    metric="roc_auc",
+    random_state=42,
+    threshold=0.1,
+):
+    """Select pseudo-label candidates by running adversarial validation internally."""
+    from .workflows import run_adversarial_validation_workflow
+
+    artifacts = run_adversarial_validation_workflow(
+        X_train,
+        X_test,
+        model=model,
+        cv=cv,
+        metric=metric,
+        random_state=random_state,
+        compute_sample_weights=False,
+    )
+
+    return select_safe_pseudo_labels(artifacts["test_proba"], threshold=threshold)
