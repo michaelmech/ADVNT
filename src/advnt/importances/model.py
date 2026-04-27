@@ -1,4 +1,4 @@
-"""Feature importance extraction and optional SHAP diagnostics."""
+"""Model-based feature importance extraction."""
 
 from __future__ import annotations
 
@@ -29,14 +29,3 @@ def extract_model_importances(model, feature_names=None):
     )
     frame["rank"] = frame["importance"].rank(method="dense", ascending=False).astype(int)
     return frame.sort_values("importance", ascending=False, ignore_index=True)
-
-
-def compute_shap_values(model, X):
-    """Compute SHAP values if optional `shap` dependency is available."""
-    try:
-        import shap
-    except ImportError as exc:  # pragma: no cover - optional dependency guard
-        raise ImportError("`shap` is optional. Install shap to use SHAP diagnostics.") from exc
-
-    explainer = shap.Explainer(model, X)
-    return explainer(X)
