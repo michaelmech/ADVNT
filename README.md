@@ -63,3 +63,38 @@ streamlit run streamlit_app.py
 ```
 
 > Note: `shap` is required for this dashboard.
+
+
+## Neural adversarial-validation model (PyTorch)
+
+You can use a sklearn-style neural model with a dedicated adversarial-validation head:
+
+```python
+from advnt import AdversarialValidator, AdversarialValidationMLPClassifier
+
+av = AdversarialValidator(
+    model=AdversarialValidationMLPClassifier(
+        hidden_dims=(64, 32),
+        max_epochs=20,
+        batch_size=256,
+        random_state=42,
+    ),
+    random_state=42,
+)
+
+av.fit(X_train, X_test)
+print(av.score_)
+```
+
+> Note: this model requires `torch` to be installed.
+
+
+You can also use a regression variant with an optional adversarial domain head:
+
+```python
+from advnt import AdversarialValidationMLPRegressor
+
+reg = AdversarialValidationMLPRegressor(max_epochs=20, random_state=42)
+reg.fit(X_train, y_train)
+y_pred = reg.predict(X_test)
+```

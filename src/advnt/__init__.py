@@ -15,6 +15,11 @@ from .workflows import (
     run_adversarial_validation_workflow,
     run_shift_preparation_workflow,
 )
+from .models import (
+    AdversarialValidationMLPClassifier,
+    AdversarialValidationMLPRegressor,
+    GradientReversalLayer,
+)
 
 __all__ = [
     "AdversarialValidator",
@@ -26,4 +31,7 @@ __all__ = [
     "select_safe_pseudo_labels_from_train_test",
     "run_adversarial_validation_workflow",
     "run_shift_preparation_workflow",
+    "AdversarialValidationMLPClassifier",
+    "AdversarialValidationMLPRegressor",
+    "GradientReversalLayer",
 ]
