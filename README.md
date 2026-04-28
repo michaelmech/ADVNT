@@ -42,3 +42,24 @@ weights = compute_density_ratio_weights_from_train_test(X_train, X_test)
 safe = select_safe_pseudo_labels_from_train_test(X_train, X_test, threshold=0.1)
 importances = extract_model_importances_from_train_test(X_train, X_test)
 ```
+
+## Streamlit app
+
+An interactive Streamlit app is included for adversarial validation diagnostics.
+
+### Features
+- Upload train and test datasets (CSV/Parquet).
+- Strict schema validation (train/test must have identical columns).
+- Choose adversarial model: `LGBMClassifier`, `RandomForestClassifier`, or `LogisticRegression`.
+- Run adversarial validation and inspect CV AV AUC and fold-level scores.
+- View top-N model-based feature importances.
+- SHAP force plots for train-domain (`class=0`) and test-domain (`class=1`) rows.
+- SHAP ranking via mean absolute SHAP values.
+
+### Run
+
+```bash
+streamlit run streamlit_app.py
+```
+
+> Note: `shap` is required for this dashboard.
