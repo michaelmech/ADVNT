@@ -55,6 +55,7 @@ class _BaseAdversarialMLP(BaseEstimator):
         max_epochs=30,
         weight_decay=1e-5,
         lambda_grl=1.0,
+        domain_loss_weight=0.2,
         random_state=42,
         device="auto",
         verbose=False,
@@ -66,6 +67,7 @@ class _BaseAdversarialMLP(BaseEstimator):
         self.max_epochs = max_epochs
         self.weight_decay = weight_decay
         self.lambda_grl = lambda_grl
+        self.domain_loss_weight = domain_loss_weight
         self.random_state = random_state
         self.device = device
         self.verbose = verbose
@@ -98,6 +100,20 @@ class _BaseAdversarialMLP(BaseEstimator):
 
         return nn.Sequential(*layers), in_dim
 
+    def _extract_eval_x(self, eval_set):
+        if eval_set is None:
+            return None
+
+        if not isinstance(eval_set, (list, tuple)) or len(eval_set) == 0:
+            raise ValueError("eval_set must be a non-empty list/tuple of tuples.")
+
+        first = eval_set[0]
+        if not isinstance(first, (list, tuple)) or len(first) == 0:
+            raise ValueError("Each eval_set element must be a tuple containing at least X_eval.")
+
+        x_eval = check_array(first[0], ensure_2d=True, dtype=np.float32)
+        return x_eval
+
     def _set_feature_importances(self):
         first_linear = None
         for layer in self.backbone_:
@@ -114,22 +130,23 @@ class _BaseAdversarialMLP(BaseEstimator):
 
 
 class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
-    """Sklearn-style PyTorch MLP classifier with an adversarial-validation head.
+    """Binary classifier with optional adversarial domain head.
 
-    This estimator is intended to be used as the model inside
-    :class:`advnt.validation.AdversarialValidator`, where ``y`` is the binary
-    domain label (0=train, 1=test).
+    Uses standard ``fit(X, y, eval_set=...)`` syntax. When ``eval_set`` is
+    provided, the first tuple can be either ``(X_eval,)`` or ``(X_eval, y_eval)``.
+    ``X_eval`` is used as target-domain data for the adversarial head.
     """
 
     def _build_network(self, n_features):
         backbone, out_dim = self._build_backbone(n_features)
-        av_head = nn.Sequential(
+        task_head = nn.Linear(out_dim, 1)
+        domain_head = nn.Sequential(
             GradientReversalLayer(lambda_=self.lambda_grl),
             nn.Linear(out_dim, 1),
         )
-        return backbone, av_head
+        return backbone, task_head, domain_head
 
-    def fit(self, X, y):
+    def fit(self, X, y, eval_set=None):
         self._check_torch()
         X = check_array(X, ensure_2d=True, dtype=np.float32)
         y = np.asarray(y, dtype=np.float32).reshape(-1)
@@ -141,44 +158,85 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
         if classes.size != 2 or not np.array_equal(classes, np.array([0.0, 1.0])):
             raise ValueError("AdversarialValidationMLPClassifier expects binary y encoded as {0, 1}.")
 
+        x_eval = self._extract_eval_x(eval_set)
+        if x_eval is not None and x_eval.shape[1] != X.shape[1]:
+            raise ValueError("X and X_eval must have the same number of features.")
+
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
         self.n_features_in_ = X.shape[1]
         self.classes_ = np.array([0, 1])
 
-        self.backbone_, self.av_head_ = self._build_network(self.n_features_in_)
+        self.backbone_, self.task_head_, self.domain_head_ = self._build_network(self.n_features_in_)
         self.device_ = self._resolve_device()
 
         self.backbone_.to(self.device_)
-        self.av_head_.to(self.device_)
+        self.task_head_.to(self.device_)
+        self.domain_head_.to(self.device_)
 
-        params = list(self.backbone_.parameters()) + list(self.av_head_.parameters())
+        params = (
+            list(self.backbone_.parameters())
+            + list(self.task_head_.parameters())
+            + list(self.domain_head_.parameters())
+        )
         optimizer = torch.optim.AdamW(params, lr=self.learning_rate, weight_decay=self.weight_decay)
-        criterion = nn.BCEWithLogitsLoss()
+        task_criterion = nn.BCEWithLogitsLoss()
+        domain_criterion = nn.BCEWithLogitsLoss()
 
         X_tensor = torch.as_tensor(X, dtype=torch.float32)
         y_tensor = torch.as_tensor(y, dtype=torch.float32)
+        X_eval_tensor = None
+        if x_eval is not None:
+            X_eval_tensor = torch.as_tensor(x_eval, dtype=torch.float32)
 
         self.backbone_.train()
-        self.av_head_.train()
+        self.task_head_.train()
+        self.domain_head_.train()
 
         for epoch in range(self.max_epochs):
-            indices = torch.randperm(X_tensor.shape[0])
+            train_perm = torch.randperm(X_tensor.shape[0])
+            eval_perm = None
+            if X_eval_tensor is not None:
+                eval_perm = torch.randperm(X_eval_tensor.shape[0])
+
             epoch_loss = 0.0
 
-            for start in range(0, X_tensor.shape[0], self.batch_size):
-                batch_idx = indices[start : start + self.batch_size]
+            for step, start in enumerate(range(0, X_tensor.shape[0], self.batch_size)):
+                batch_idx = train_perm[start : start + self.batch_size]
                 xb = X_tensor[batch_idx].to(self.device_)
                 yb = y_tensor[batch_idx].to(self.device_)
 
                 optimizer.zero_grad()
+
                 feats = self.backbone_(xb)
-                logits = self.av_head_(feats).squeeze(1)
-                loss = criterion(logits, yb)
+                task_logits = self.task_head_(feats).squeeze(1)
+                loss = task_criterion(task_logits, yb)
+
+                if X_eval_tensor is not None:
+                    e_start = (step * self.batch_size) % X_eval_tensor.shape[0]
+                    e_end = e_start + batch_idx.shape[0]
+                    e_idx = eval_perm[e_start:e_end]
+                    if e_idx.shape[0] < batch_idx.shape[0]:
+                        extra = batch_idx.shape[0] - e_idx.shape[0]
+                        e_idx = torch.cat([e_idx, eval_perm[:extra]])
+
+                    xeb = X_eval_tensor[e_idx].to(self.device_)
+                    eval_feats = self.backbone_(xeb)
+
+                    domain_feats = torch.cat([feats, eval_feats], dim=0)
+                    domain_labels = torch.cat(
+                        [
+                            torch.zeros(feats.shape[0], device=self.device_),
+                            torch.ones(eval_feats.shape[0], device=self.device_),
+                        ]
+                    )
+                    domain_logits = self.domain_head_(domain_feats).squeeze(1)
+                    domain_loss = domain_criterion(domain_logits, domain_labels)
+                    loss = loss + float(self.domain_loss_weight) * domain_loss
+
                 loss.backward()
                 optimizer.step()
-
                 epoch_loss += float(loss.detach().cpu())
 
             if self.verbose:
@@ -189,15 +247,15 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
         return self
 
     def decision_function(self, X):
-        check_is_fitted(self, ["backbone_", "av_head_"])
+        check_is_fitted(self, ["backbone_", "task_head_"])
         X = check_array(X, ensure_2d=True, dtype=np.float32)
 
         self.backbone_.eval()
-        self.av_head_.eval()
+        self.task_head_.eval()
         with torch.no_grad():
             xb = torch.as_tensor(X, dtype=torch.float32, device=self.device_)
             feats = self.backbone_(xb)
-            logits = self.av_head_(feats).squeeze(1)
+            logits = self.task_head_(feats).squeeze(1)
         return logits.detach().cpu().numpy()
 
     def predict_proba(self, X):
@@ -211,59 +269,18 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
 
 
 class AdversarialValidationMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
-    """Sklearn-style PyTorch MLP regressor with optional AV-domain head.
-
-    Parameters
-    ----------
-    domain_loss_weight:
-        Weight applied to the adversarial domain loss when ``domain_y`` is
-        provided in :meth:`fit`.
-
-    Notes
-    -----
-    ``fit(X, y, domain_y=None)`` uses pure regression loss when ``domain_y`` is
-    omitted. When ``domain_y`` is provided (binary {0, 1}), the model jointly
-    optimizes regression loss and adversarial domain loss.
-    """
-
-    def __init__(
-        self,
-        hidden_dims=(64, 32),
-        dropout=0.1,
-        learning_rate=1e-3,
-        batch_size=256,
-        max_epochs=30,
-        weight_decay=1e-5,
-        lambda_grl=1.0,
-        domain_loss_weight=0.2,
-        random_state=42,
-        device="auto",
-        verbose=False,
-    ):
-        super().__init__(
-            hidden_dims=hidden_dims,
-            dropout=dropout,
-            learning_rate=learning_rate,
-            batch_size=batch_size,
-            max_epochs=max_epochs,
-            weight_decay=weight_decay,
-            lambda_grl=lambda_grl,
-            random_state=random_state,
-            device=device,
-            verbose=verbose,
-        )
-        self.domain_loss_weight = domain_loss_weight
+    """Regressor with optional adversarial domain head via eval_set."""
 
     def _build_network(self, n_features):
         backbone, out_dim = self._build_backbone(n_features)
-        target_head = nn.Linear(out_dim, 1)
-        av_head = nn.Sequential(
+        task_head = nn.Linear(out_dim, 1)
+        domain_head = nn.Sequential(
             GradientReversalLayer(lambda_=self.lambda_grl),
             nn.Linear(out_dim, 1),
         )
-        return backbone, target_head, av_head
+        return backbone, task_head, domain_head
 
-    def fit(self, X, y, domain_y=None):
+    def fit(self, X, y, eval_set=None):
         self._check_torch()
         X = check_array(X, ensure_2d=True, dtype=np.float32)
         y = np.asarray(y, dtype=np.float32).reshape(-1)
@@ -271,67 +288,83 @@ class AdversarialValidationMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
         if X.shape[0] != y.shape[0]:
             raise ValueError("X and y must contain the same number of rows.")
 
-        if domain_y is not None:
-            domain_y = np.asarray(domain_y, dtype=np.float32).reshape(-1)
-            if domain_y.shape[0] != X.shape[0]:
-                raise ValueError("domain_y must have the same number of rows as X.")
-            classes = np.unique(domain_y)
-            if classes.size != 2 or not np.array_equal(classes, np.array([0.0, 1.0])):
-                raise ValueError("domain_y must be binary and encoded as {0, 1}.")
+        x_eval = self._extract_eval_x(eval_set)
+        if x_eval is not None and x_eval.shape[1] != X.shape[1]:
+            raise ValueError("X and X_eval must have the same number of features.")
 
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
         self.n_features_in_ = X.shape[1]
-        self.backbone_, self.target_head_, self.av_head_ = self._build_network(self.n_features_in_)
+        self.backbone_, self.task_head_, self.domain_head_ = self._build_network(self.n_features_in_)
         self.device_ = self._resolve_device()
 
         self.backbone_.to(self.device_)
-        self.target_head_.to(self.device_)
-        self.av_head_.to(self.device_)
+        self.task_head_.to(self.device_)
+        self.domain_head_.to(self.device_)
 
         params = (
             list(self.backbone_.parameters())
-            + list(self.target_head_.parameters())
-            + list(self.av_head_.parameters())
+            + list(self.task_head_.parameters())
+            + list(self.domain_head_.parameters())
         )
         optimizer = torch.optim.AdamW(params, lr=self.learning_rate, weight_decay=self.weight_decay)
         mse = nn.MSELoss()
-        bce = nn.BCEWithLogitsLoss()
+        domain_criterion = nn.BCEWithLogitsLoss()
 
         X_tensor = torch.as_tensor(X, dtype=torch.float32)
         y_tensor = torch.as_tensor(y, dtype=torch.float32)
-        domain_tensor = None
-        if domain_y is not None:
-            domain_tensor = torch.as_tensor(domain_y, dtype=torch.float32)
+        X_eval_tensor = None
+        if x_eval is not None:
+            X_eval_tensor = torch.as_tensor(x_eval, dtype=torch.float32)
 
         self.backbone_.train()
-        self.target_head_.train()
-        self.av_head_.train()
+        self.task_head_.train()
+        self.domain_head_.train()
 
         for epoch in range(self.max_epochs):
-            indices = torch.randperm(X_tensor.shape[0])
+            train_perm = torch.randperm(X_tensor.shape[0])
+            eval_perm = None
+            if X_eval_tensor is not None:
+                eval_perm = torch.randperm(X_eval_tensor.shape[0])
+
             epoch_loss = 0.0
 
-            for start in range(0, X_tensor.shape[0], self.batch_size):
-                batch_idx = indices[start : start + self.batch_size]
+            for step, start in enumerate(range(0, X_tensor.shape[0], self.batch_size)):
+                batch_idx = train_perm[start : start + self.batch_size]
                 xb = X_tensor[batch_idx].to(self.device_)
                 yb = y_tensor[batch_idx].to(self.device_)
 
                 optimizer.zero_grad()
 
                 feats = self.backbone_(xb)
-                pred = self.target_head_(feats).squeeze(1)
+                pred = self.task_head_(feats).squeeze(1)
                 loss = mse(pred, yb)
 
-                if domain_tensor is not None:
-                    db = domain_tensor[batch_idx].to(self.device_)
-                    dlogits = self.av_head_(feats).squeeze(1)
-                    loss = loss + float(self.domain_loss_weight) * bce(dlogits, db)
+                if X_eval_tensor is not None:
+                    e_start = (step * self.batch_size) % X_eval_tensor.shape[0]
+                    e_end = e_start + batch_idx.shape[0]
+                    e_idx = eval_perm[e_start:e_end]
+                    if e_idx.shape[0] < batch_idx.shape[0]:
+                        extra = batch_idx.shape[0] - e_idx.shape[0]
+                        e_idx = torch.cat([e_idx, eval_perm[:extra]])
+
+                    xeb = X_eval_tensor[e_idx].to(self.device_)
+                    eval_feats = self.backbone_(xeb)
+
+                    domain_feats = torch.cat([feats, eval_feats], dim=0)
+                    domain_labels = torch.cat(
+                        [
+                            torch.zeros(feats.shape[0], device=self.device_),
+                            torch.ones(eval_feats.shape[0], device=self.device_),
+                        ]
+                    )
+                    domain_logits = self.domain_head_(domain_feats).squeeze(1)
+                    domain_loss = domain_criterion(domain_logits, domain_labels)
+                    loss = loss + float(self.domain_loss_weight) * domain_loss
 
                 loss.backward()
                 optimizer.step()
-
                 epoch_loss += float(loss.detach().cpu())
 
             if self.verbose:
@@ -342,15 +375,15 @@ class AdversarialValidationMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
         return self
 
     def predict(self, X):
-        check_is_fitted(self, ["backbone_", "target_head_"])
+        check_is_fitted(self, ["backbone_", "task_head_"])
         X = check_array(X, ensure_2d=True, dtype=np.float32)
 
         self.backbone_.eval()
-        self.target_head_.eval()
+        self.task_head_.eval()
         with torch.no_grad():
             xb = torch.as_tensor(X, dtype=torch.float32, device=self.device_)
             feats = self.backbone_(xb)
-            pred = self.target_head_(feats).squeeze(1)
+            pred = self.task_head_(feats).squeeze(1)
         return pred.detach().cpu().numpy()
 
     def score(self, X, y):

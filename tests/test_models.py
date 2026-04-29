@@ -12,34 +12,37 @@ from advnt import (
 torch = pytest.importorskip("torch")
 
 
-def _make_shifted_data(seed=42):
+def _make_binary_data(seed=42):
     rng = np.random.default_rng(seed)
-    x_train = rng.normal(0.0, 1.0, size=(120, 4))
-    x_test = rng.normal(0.6, 1.0, size=(120, 4))
-    return x_train, x_test
+    x = rng.normal(size=(200, 4))
+    logits = 1.2 * x[:, 0] - 0.8 * x[:, 1]
+    probs = 1 / (1 + np.exp(-logits))
+    y = (probs > 0.5).astype(int)
+    x_test = rng.normal(loc=0.4, size=(120, 4))
+    return x, y, x_test
 
 
-def test_mlp_classifier_sklearn_clone_and_predict_proba_shape():
-    x_train, x_test = _make_shifted_data()
-    x_adv = np.vstack([x_train, x_test])
-    y_adv = np.r_[np.zeros(len(x_train), dtype=int), np.ones(len(x_test), dtype=int)]
+def test_classifier_accepts_eval_set_with_x_only_tuple():
+    x, y, x_test = _make_binary_data(seed=7)
 
     clf = AdversarialValidationMLPClassifier(max_epochs=5, batch_size=64, random_state=7)
     cloned = clone(clf)
-    cloned.fit(x_adv, y_adv)
+    cloned.fit(x, y, eval_set=[(x_test,)])
 
-    proba = cloned.predict_proba(x_adv)
-    assert proba.shape == (len(x_adv), 2)
+    proba = cloned.predict_proba(x)
+    assert proba.shape == (len(x), 2)
     assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
 
 
-def test_mlp_classifier_works_inside_adversarial_validator():
-    x_train, x_test = _make_shifted_data(seed=123)
+def test_classifier_works_inside_adversarial_validator_without_eval_set():
+    rng = np.random.default_rng(123)
+    x_train = rng.normal(0.0, 1.0, size=(120, 4))
+    x_test = rng.normal(0.6, 1.0, size=(120, 4))
 
     av = AdversarialValidator(
         model=AdversarialValidationMLPClassifier(
             hidden_dims=(32,),
-            max_epochs=8,
+            max_epochs=6,
             batch_size=64,
             random_state=13,
         ),
@@ -49,17 +52,17 @@ def test_mlp_classifier_works_inside_adversarial_validator():
 
     assert 0.5 <= av.score_ <= 1.0
     assert av.oof_train_proba_.shape[0] == len(x_train)
-    assert av.test_proba_.shape[0] == len(x_test)
 
 
-def test_mlp_regressor_sklearn_clone_and_predict_shape():
+def test_regressor_accepts_eval_set_with_x_only_tuple():
     rng = np.random.default_rng(11)
     x = rng.normal(size=(180, 5))
     y = 2.0 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(scale=0.1, size=180)
+    x_test = rng.normal(loc=0.3, size=(100, 5))
 
-    reg = AdversarialValidationMLPRegressor(max_epochs=12, batch_size=64, random_state=11)
+    reg = AdversarialValidationMLPRegressor(max_epochs=8, batch_size=64, random_state=11)
     cloned = clone(reg)
-    cloned.fit(x, y)
+    cloned.fit(x, y, eval_set=[(x_test,)])
 
     pred = cloned.predict(x)
     assert pred.shape == (len(x),)

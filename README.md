@@ -88,13 +88,16 @@ print(av.score_)
 
 > Note: this model requires `torch` to be installed.
 
-
-You can also use a regression variant with an optional adversarial domain head:
+You can also train the neural estimators as regular models and optionally pass
+`eval_set=[(X_test,)]` so the adversarial head treats that block as target-domain
+data while the main head learns from your normal `y` labels:
 
 ```python
-from advnt import AdversarialValidationMLPRegressor
+from advnt import AdversarialValidationMLPClassifier, AdversarialValidationMLPRegressor
+
+clf = AdversarialValidationMLPClassifier(max_epochs=20, random_state=42)
+clf.fit(X_train, y_train_binary, eval_set=[(X_test,)])
 
 reg = AdversarialValidationMLPRegressor(max_epochs=20, random_state=42)
-reg.fit(X_train, y_train)
-y_pred = reg.predict(X_test)
+reg.fit(X_train, y_train, eval_set=[(X_test,)])
 ```
