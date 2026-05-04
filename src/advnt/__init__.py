@@ -16,6 +16,8 @@ from .workflows import (
     run_shift_preparation_workflow,
 )
 from .models import (
+    ADVMLPClassifier,
+    ADVMLPRegressor,
     AdversarialValidationMLPClassifier,
     AdversarialValidationMLPRegressor,
     GradientReversalLayer,
@@ -31,6 +33,8 @@ __all__ = [
     "select_safe_pseudo_labels_from_train_test",
     "run_adversarial_validation_workflow",
     "run_shift_preparation_workflow",
+    "ADVMLPClassifier",
+    "ADVMLPRegressor",
     "AdversarialValidationMLPClassifier",
     "AdversarialValidationMLPRegressor",
     "GradientReversalLayer",
