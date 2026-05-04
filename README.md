@@ -50,7 +50,7 @@ An interactive Streamlit app is included for adversarial validation diagnostics.
 ### Features
 - Upload train and test datasets (CSV/Parquet).
 - Strict schema validation (train/test must have identical columns).
-- Choose adversarial model: `LGBMClassifier`, `RandomForestClassifier`, or `LogisticRegression`.
+- Choose adversarial model: `LGBMClassifier` or `LogisticRegression`.
 - Run adversarial validation and inspect CV AV AUC and fold-level scores.
 - View top-N model-based feature importances.
 - SHAP force plots for train-domain (`class=0`) and test-domain (`class=1`) rows.
@@ -70,10 +70,10 @@ Streamlit Cloud installs the root `requirements.txt` before launching the app.
 You can use a sklearn-style neural model with a dedicated adversarial-validation head:
 
 ```python
-from advnt import AdversarialValidator, AdversarialValidationMLPClassifier
+from advnt import AdversarialValidator, ADVMLPClassifier
 
 av = AdversarialValidator(
-    model=AdversarialValidationMLPClassifier(
+    model=ADVMLPClassifier(
         hidden_dims=(64, 32),
         max_epochs=20,
         batch_size=256,
@@ -88,16 +88,17 @@ print(av.score_)
 
 > Note: this model requires `torch` to be installed.
 
-You can also train the neural estimators as regular models and optionally pass
-`eval_set=[(X_test,)]` so the adversarial head treats that block as target-domain
-data while the main head learns from your normal `y` labels:
+You can also train the neural estimators as regular models. The classifier
+supports binary and multiclass labels and optionally accepts `eval_set=[(X_test,)]`
+so the adversarial head treats that block as target-domain data while the main
+head learns from your normal `y` labels:
 
 ```python
-from advnt import AdversarialValidationMLPClassifier, AdversarialValidationMLPRegressor
+from advnt import ADVMLPClassifier, ADVMLPRegressor
 
-clf = AdversarialValidationMLPClassifier(max_epochs=20, random_state=42)
-clf.fit(X_train, y_train_binary, eval_set=[(X_test,)])
+clf = ADVMLPClassifier(max_epochs=20, random_state=42)
+clf.fit(X_train, y_train, eval_set=[(X_test,)])
 
-reg = AdversarialValidationMLPRegressor(max_epochs=20, random_state=42)
+reg = ADVMLPRegressor(max_epochs=20, random_state=42)
 reg.fit(X_train, y_train, eval_set=[(X_test,)])
 ```

@@ -16,7 +16,6 @@ import streamlit as st
 
 import shap
 
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
 from advnt import AdversarialValidator
@@ -46,14 +45,6 @@ def _read_tabular_upload(uploaded_file) -> pd.DataFrame:
 
 
 def _build_model(model_name: str, random_state: int):
-    if model_name == "RandomForestClassifier":
-        return RandomForestClassifier(
-            n_estimators=300,
-            min_samples_leaf=5,
-            n_jobs=-1,
-            random_state=random_state,
-        )
-
     if model_name == "LogisticRegression":
         return LogisticRegression(max_iter=2000, solver="lbfgs")
 
@@ -100,7 +91,7 @@ with st.sidebar:
     st.header("Configuration")
     model_name = st.selectbox(
         "Adversarial model",
-        ["RandomForestClassifier", "LGBMClassifier", "LogisticRegression"],
+        ["LGBMClassifier", "LogisticRegression"],
         index=0,
     )
     random_state = st.number_input("Random state", min_value=0, value=42, step=1)

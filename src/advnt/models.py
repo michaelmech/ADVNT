@@ -129,17 +129,17 @@ class _BaseAdversarialMLP(BaseEstimator):
         self.feature_importances_ = np.mean(np.abs(w), axis=0)
 
 
-class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
-    """Binary classifier with optional adversarial domain head.
+class ADVMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
+    """Classifier with optional adversarial domain head.
 
     Uses standard ``fit(X, y, eval_set=...)`` syntax. When ``eval_set`` is
     provided, the first tuple can be either ``(X_eval,)`` or ``(X_eval, y_eval)``.
     ``X_eval`` is used as target-domain data for the adversarial head.
     """
 
-    def _build_network(self, n_features):
+    def _build_network(self, n_features, n_classes):
         backbone, out_dim = self._build_backbone(n_features)
-        task_head = nn.Linear(out_dim, 1)
+        task_head = nn.Linear(out_dim, n_classes)
         domain_head = nn.Sequential(
             GradientReversalLayer(lambda_=self.lambda_grl),
             nn.Linear(out_dim, 1),
@@ -149,14 +149,14 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
     def fit(self, X, y, eval_set=None):
         self._check_torch()
         X = check_array(X, ensure_2d=True, dtype=np.float32)
-        y = np.asarray(y, dtype=np.float32).reshape(-1)
+        y = np.asarray(y).reshape(-1)
 
         if X.shape[0] != y.shape[0]:
             raise ValueError("X and y must contain the same number of rows.")
 
-        classes = np.unique(y)
-        if classes.size != 2 or not np.array_equal(classes, np.array([0.0, 1.0])):
-            raise ValueError("AdversarialValidationMLPClassifier expects binary y encoded as {0, 1}.")
+        classes, y_encoded = np.unique(y, return_inverse=True)
+        if classes.size < 2:
+            raise ValueError("ADVMLPClassifier requires at least two classes.")
 
         x_eval = self._extract_eval_x(eval_set)
         if x_eval is not None and x_eval.shape[1] != X.shape[1]:
@@ -166,9 +166,13 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
         np.random.seed(self.random_state)
 
         self.n_features_in_ = X.shape[1]
-        self.classes_ = np.array([0, 1])
+        self.classes_ = classes
+        self.n_classes_ = classes.size
 
-        self.backbone_, self.task_head_, self.domain_head_ = self._build_network(self.n_features_in_)
+        self.backbone_, self.task_head_, self.domain_head_ = self._build_network(
+            self.n_features_in_,
+            self.n_classes_,
+        )
         self.device_ = self._resolve_device()
 
         self.backbone_.to(self.device_)
@@ -181,11 +185,11 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
             + list(self.domain_head_.parameters())
         )
         optimizer = torch.optim.AdamW(params, lr=self.learning_rate, weight_decay=self.weight_decay)
-        task_criterion = nn.BCEWithLogitsLoss()
+        task_criterion = nn.CrossEntropyLoss()
         domain_criterion = nn.BCEWithLogitsLoss()
 
         X_tensor = torch.as_tensor(X, dtype=torch.float32)
-        y_tensor = torch.as_tensor(y, dtype=torch.float32)
+        y_tensor = torch.as_tensor(y_encoded, dtype=torch.long)
         X_eval_tensor = None
         if x_eval is not None:
             X_eval_tensor = torch.as_tensor(x_eval, dtype=torch.float32)
@@ -210,7 +214,7 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
                 optimizer.zero_grad()
 
                 feats = self.backbone_(xb)
-                task_logits = self.task_head_(feats).squeeze(1)
+                task_logits = self.task_head_(feats)
                 loss = task_criterion(task_logits, yb)
 
                 if X_eval_tensor is not None:
@@ -246,7 +250,7 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
         self._set_feature_importances()
         return self
 
-    def decision_function(self, X):
+    def _predict_logits(self, X):
         check_is_fitted(self, ["backbone_", "task_head_"])
         X = check_array(X, ensure_2d=True, dtype=np.float32)
 
@@ -255,20 +259,27 @@ class AdversarialValidationMLPClassifier(_BaseAdversarialMLP, ClassifierMixin):
         with torch.no_grad():
             xb = torch.as_tensor(X, dtype=torch.float32, device=self.device_)
             feats = self.backbone_(xb)
-            logits = self.task_head_(feats).squeeze(1)
+            logits = self.task_head_(feats)
         return logits.detach().cpu().numpy()
 
+    def decision_function(self, X):
+        logits = self._predict_logits(X)
+        if logits.shape[1] == 2:
+            return logits[:, 1] - logits[:, 0]
+        return logits
+
     def predict_proba(self, X):
-        logits = self.decision_function(X)
-        probs_1 = 1.0 / (1.0 + np.exp(-logits))
-        probs_0 = 1.0 - probs_1
-        return np.column_stack([probs_0, probs_1])
+        logits = self._predict_logits(X)
+        logits = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(logits)
+        return exp_logits / exp_logits.sum(axis=1, keepdims=True)
 
     def predict(self, X):
-        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+        class_indices = np.argmax(self.predict_proba(X), axis=1)
+        return self.classes_[class_indices]
 
 
-class AdversarialValidationMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
+class ADVMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
     """Regressor with optional adversarial domain head via eval_set."""
 
     def _build_network(self, n_features):
@@ -389,3 +400,7 @@ class AdversarialValidationMLPRegressor(_BaseAdversarialMLP, RegressorMixin):
     def score(self, X, y):
         y = np.asarray(y, dtype=float).reshape(-1)
         return r2_score(y, self.predict(X))
+
+
+AdversarialValidationMLPClassifier = ADVMLPClassifier
+AdversarialValidationMLPRegressor = ADVMLPRegressor
