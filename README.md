@@ -62,6 +62,8 @@ An interactive Streamlit app is included for adversarial validation diagnostics.
 streamlit run streamlit_app.py
 ```
 
+Streamlit Cloud installs the root `requirements.txt` before launching the app.
+
 > Note: `shap` is optional. Install it only if you want the SHAP diagnostics panel.
 
 
