@@ -50,7 +50,7 @@ An interactive Streamlit app is included for adversarial validation diagnostics.
 ### Features
 - Upload train and test datasets (CSV/Parquet).
 - Strict schema validation (train/test must have identical columns).
-- Choose adversarial model: `LGBMClassifier`, `RandomForestClassifier`, or `LogisticRegression`.
+- Choose adversarial model: `LGBMClassifier` or `LogisticRegression`.
 - Run adversarial validation and inspect CV AV AUC and fold-level scores.
 - View top-N model-based feature importances.
 - SHAP force plots for train-domain (`class=0`) and test-domain (`class=1`) rows.
