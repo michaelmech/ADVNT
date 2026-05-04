@@ -13,7 +13,11 @@ if str(SRC) not in sys.path:
 import numpy as np
 import pandas as pd
 import streamlit as st
-import shap
+
+try:
+    import shap
+except ImportError:  # pragma: no cover - optional dashboard dependency
+    shap = None
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -92,6 +96,8 @@ def _assert_same_columns(X_train: pd.DataFrame, X_test: pd.DataFrame) -> pd.Data
 
 
 def _render_force_plot_html(force_plot) -> str:
+    if shap is None:
+        raise ImportError("Install shap to render SHAP force plots.")
     return f"<head>{shap.getjs()}</head><body>{force_plot.html()}</body>"
 
 
@@ -156,14 +162,20 @@ if run_button:
         )
 
     st.subheader("SHAP Diagnostics")
-    st.caption(
-        "Force plots show a single train-domain and test-domain row explanation."
-    )
+    if shap is None:
+        st.info("Install `shap` to enable SHAP diagnostics. The core adversarial validation results above do not require it.")
+        st.stop()
+
+    st.caption("Force plots show a single train-domain and test-domain row explanation.")
 
     X_adv = pd.concat([X_train, X_test], axis=0, ignore_index=True)
     y_adv = np.r_[np.zeros(len(X_train), dtype=int), np.ones(len(X_test), dtype=int)]
 
-    shap_values = compute_shap_values(validator.model_, X_adv)
+    try:
+        shap_values = compute_shap_values(validator.model_, X_adv)
+    except ImportError as exc:
+        st.info(str(exc))
+        st.stop()
 
     train_class_rows = np.where(y_adv == 0)[0]
     test_class_rows = np.where(y_adv == 1)[0]

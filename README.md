@@ -53,8 +53,8 @@ An interactive Streamlit app is included for adversarial validation diagnostics.
 - Choose adversarial model: `LGBMClassifier`, `RandomForestClassifier`, or `LogisticRegression`.
 - Run adversarial validation and inspect CV AV AUC and fold-level scores.
 - View top-N model-based feature importances.
-- SHAP force plots for train-domain (`class=0`) and test-domain (`class=1`) rows.
-- SHAP ranking via mean absolute SHAP values.
+- Optional SHAP force plots for train-domain (`class=0`) and test-domain (`class=1`) rows.
+- Optional SHAP ranking via mean absolute SHAP values.
 
 ### Run
 
@@ -62,7 +62,7 @@ An interactive Streamlit app is included for adversarial validation diagnostics.
 streamlit run streamlit_app.py
 ```
 
-> Note: `shap` is required for this dashboard.
+> Note: `shap` is optional. Install it only if you want the SHAP diagnostics panel.
 
 
 ## Neural adversarial-validation model (PyTorch)
