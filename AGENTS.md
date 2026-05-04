@@ -1,401 +1,466 @@
-# AGENTS.md
+# AGENTS.md — Kaggle Playground Series S6E5: Predicting F1 Pit Stops
 
-## Project: ADVNT
+## Goal
 
-ADVNT is a Python package for adversarial validation and drift-aware machine learning workflows.
+Create a clean, reproducible Jupyter notebook for the Kaggle competition:
 
-The core idea is to treat adversarial validation as more than a one-off diagnostic. The foundational estimator should expose train-vs-test separability, out-of-fold adversarial probabilities, model-based feature importances, sample weights for covariate shift, and reusable artifacts that downstream modules can build on.
+- Competition: `playground-series-s6e5`
+- Title: `Predicting F1 Pit Stops`
+- Task: binary classification
+- Target: `PitNextLap`
+- Metric: ROC AUC
+- Required output: `submission.csv` with columns matching `sample_submission.csv`
 
-## Primary Goal
+The notebook should get from raw Kaggle input files to a valid submission, with a strong tabular baseline and enough diagnostics to iterate.
 
-Build a clean, sklearn-style library around adversarial validation.
+## Data location
 
-The base class should be the backbone for:
+Assume the notebook runs on Kaggle unless told otherwise.
 
-- train/test drift detection
-- covariate shift sample weighting
-- model-based drift feature attribution
-- safe-zone pseudo-label candidate selection
-- rolling time-series changepoint detection
-- optional SHAP-based root-cause analysis
-- future deep-learning domain-adversarial utilities
+```python
+COMP_PATH = "/kaggle/input/competitions/playground-series-s6e5/"
+TRAIN_PATH = COMP_PATH + "train.csv"
+TEST_PATH = COMP_PATH + "test.csv"
+SAMPLE_SUB_PATH = COMP_PATH + "sample_submission.csv"
+```
 
-Keep the initial implementation practical and tabular-ML focused. Do not over-engineer the first version around neural networks.
-
-## Foundational Class
-
-The base estimator should live in something like:
+Expected files:
 
 ```text
-src/advnt/validation.py
+train.csv
+test.csv
+sample_submission.csv
 ```
 
-Preferred public API:
+Public notebooks show `train.csv`, `test.csv`, and `sample_submission.csv` being loaded from this competition path.
 
-```python
-from advnt import AdversarialValidator
+## Known schema notes
 
-av = AdversarialValidator(
-    model=None,
-    cv=None,
-    metric="roc_auc",
-    random_state=42,
-)
+Use the actual CSV columns as source of truth. Based on public Kaggle notebook snippets, expect at least:
 
-av.fit(X_train, X_test)
-
-av.score_
-av.fold_scores_
-av.oof_train_proba_
-av.test_proba_
-av.feature_importances_
-av.sample_weights_
+```text
+id
+Driver
+Compound
+Race
+Year
+PitStop
+LapNumber
+Stint
+TyreLife
+Position
+LapTime (s)
+Position_Change
+PitNextLap   # train only target
 ```
 
-Follow sklearn conventions:
+Public snippets also show:
 
-- `fit(X_train, X_test, y=None)` returns `self`
-- learned attributes end with `_`
-- constructor should only store parameters, not perform work
-- avoid mutating user inputs
-- support pandas DataFrames and numpy arrays
-- preserve feature names when available
-- use sklearn utilities where they make sense
-- implement `get_params` / `set_params` through `BaseEstimator`
+- `train` has about `439140` rows.
+- `PitNextLap` is a float/binary target.
+- Categorical/object columns include at least `Driver`, `Compound`, and likely `Race`.
+- The task is to predict whether a driver will pit on the next lap.
 
-## Base Class Requirements
+Do not hard-code the full schema beyond `id` and `PitNextLap`. Print and validate the loaded columns.
 
-The base adversarial validator should:
+## Notebook structure
 
-1. Combine `X_train` and `X_test` into one feature matrix.
-2. Create a binary domain target:
-   - `0` for train rows
-   - `1` for test rows
-3. Run cross-validation on the combined matrix.
-4. Store out-of-fold probabilities for all rows where possible.
-5. Store train-row adversarial probabilities separately.
-6. Fit a final adversarial model on the full combined matrix.
-7. Predict probabilities for the full test block.
-8. Compute fold scores and aggregate score using the configured binary metric.
-9. Compute model-based feature importances when supported.
-10. Compute density-ratio-style sample weights for train rows.
+Build the notebook with these sections:
 
-## Defaults
+1. Setup
+2. Load data
+3. Sanity checks
+4. Light EDA
+5. Feature engineering
+6. Validation strategy
+7. Baseline model
+8. Model comparison / ensembling
+9. Final training
+10. Submission generation
+11. Next experiments
 
-Reasonable defaults:
+## Setup cell
+
+Use concise imports.
 
 ```python
-from sklearn.ensemble import RandomForestClassifier
+import os
+import gc
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import StratifiedKFold, GroupKFold
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.pipeline import make_pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+```
 
-model = RandomForestClassifier(
-    n_estimators=300,
-    min_samples_leaf=5,
-    n_jobs=-1,
-    random_state=random_state,
+Also try optional libraries if available:
+
+```python
+try:
+    from xgboost import XGBClassifier
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
+
+try:
+    from catboost import CatBoostClassifier
+    HAS_CAT = True
+except Exception:
+    HAS_CAT = False
+
+try:
+    from lightgbm import LGBMClassifier
+    HAS_LGBM = True
+except Exception:
+    HAS_LGBM = False
+```
+
+## Load data
+
+```python
+train = pd.read_csv(TRAIN_PATH)
+test = pd.read_csv(TEST_PATH)
+sample_sub = pd.read_csv(SAMPLE_SUB_PATH)
+
+TARGET = "PitNextLap"
+ID_COL = "id"
+
+print(train.shape, test.shape, sample_sub.shape)
+display(train.head())
+display(test.head())
+display(sample_sub.head())
+
+assert TARGET in train.columns
+assert ID_COL in train.columns
+assert ID_COL in test.columns
+```
+
+## Sanity checks
+
+Add checks for:
+
+```python
+print(train.info())
+print(test.info())
+print(train[TARGET].value_counts(dropna=False))
+print(train[TARGET].mean())
+print(train.isna().mean().sort_values(ascending=False).head(20))
+print(test.isna().mean().sort_values(ascending=False).head(20))
+```
+
+Validate submission format:
+
+```python
+assert list(sample_sub.columns) == [ID_COL, TARGET]
+assert len(sample_sub) == len(test)
+```
+
+## EDA requirements
+
+Keep EDA useful, not bloated.
+
+Include:
+
+```python
+# target prevalence
+train[TARGET].mean()
+
+# by obvious categorical/time features when present
+for col in ["Compound", "Driver", "Race", "Year", "Stint", "LapNumber", "TyreLife", "Position"]:
+    if col in train.columns:
+        display(
+            train.groupby(col)[TARGET]
+                 .agg(["count", "mean"])
+                 .sort_values("count", ascending=False)
+                 .head(30)
+        )
+```
+
+Plot only a few high-value charts:
+
+```python
+import matplotlib.pyplot as plt
+
+if "LapNumber" in train.columns:
+    train.groupby("LapNumber")[TARGET].mean().plot(figsize=(10, 4), title="Pit probability by lap")
+    plt.show()
+
+if "TyreLife" in train.columns:
+    train.groupby("TyreLife")[TARGET].mean().plot(figsize=(10, 4), title="Pit probability by tyre life")
+    plt.show()
+```
+
+## Feature engineering
+
+Write feature engineering as one function applied to train and test together.
+
+Rules:
+
+- Do not use `PitNextLap` in features.
+- Do not leak future test labels.
+- Keep transformations deterministic.
+- Preserve `id` only for submission, not modeling.
+
+Start simple:
+
+```python
+def add_features(df):
+    df = df.copy()
+
+    if "LapNumber" in df.columns:
+        df["lap_num_sq"] = df["LapNumber"] ** 2
+        df["lap_num_log1p"] = np.log1p(df["LapNumber"])
+
+    if "TyreLife" in df.columns:
+        df["tyre_life_sq"] = df["TyreLife"] ** 2
+        df["tyre_life_log1p"] = np.log1p(df["TyreLife"].clip(lower=0))
+
+    if {"LapNumber", "TyreLife"}.issubset(df.columns):
+        df["tyre_life_per_lap"] = df["TyreLife"] / (df["LapNumber"] + 1)
+        df["laps_since_start_of_stint_est"] = df["TyreLife"]
+
+    if {"Position", "Position_Change"}.issubset(df.columns):
+        df["position_after_change_est"] = df["Position"] + df["Position_Change"]
+
+    if {"LapTime (s)", "Driver"}.issubset(df.columns):
+        # Computed later with train-only maps to avoid leakage if used.
+        pass
+
+    if "Compound" in df.columns:
+        compound_order = {"SOFT": 0, "MEDIUM": 1, "HARD": 2, "INTERMEDIATE": 3, "WET": 4}
+        df["compound_ord"] = df["Compound"].map(compound_order).fillna(-1)
+
+    return df
+```
+
+Add train-derived aggregate encodings carefully inside each fold, not globally, for validation. For the first version, skip target encoding unless implementing it fold-safely.
+
+Safe non-target aggregates can be fit on train and applied to test:
+
+```python
+def add_count_features(train_fe, test_fe, cols):
+    all_df = pd.concat([train_fe[cols], test_fe[cols]], axis=0, ignore_index=True)
+    for col in cols:
+        if col in train_fe.columns:
+            vc = all_df[col].value_counts(dropna=False)
+            train_fe[f"{col}_count"] = train_fe[col].map(vc).astype("float32")
+            test_fe[f"{col}_count"] = test_fe[col].map(vc).astype("float32")
+    return train_fe, test_fe
+```
+
+## Validation strategy
+
+Use ROC AUC.
+
+Default:
+
+```python
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+```
+
+Also test a group split by `Race` if `Race` exists, because random row splits may overestimate performance if rows from the same race are highly correlated.
+
+```python
+if "Race" in train.columns:
+    # Use GroupKFold as a robustness check, not necessarily final leaderboard proxy.
+    groups = train["Race"].astype(str)
+```
+
+Report both if time allows.
+
+## Preprocessing
+
+Use categorical handling compatible with tree models.
+
+```python
+feature_cols = [c for c in train_fe.columns if c not in [TARGET, ID_COL]]
+cat_cols = [c for c in feature_cols if train_fe[c].dtype == "object"]
+num_cols = [c for c in feature_cols if c not in cat_cols]
+```
+
+For sklearn models:
+
+```python
+preprocess = ColumnTransformer(
+    transformers=[
+        ("num", SimpleImputer(strategy="median"), num_cols),
+        ("cat", make_pipeline(
+            SimpleImputer(strategy="most_frequent"),
+            OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+        ), cat_cols),
+    ],
+    remainder="drop"
 )
-
-cv = StratifiedKFold(
-    n_splits=5,
-    shuffle=True,
-    random_state=random_state,
-)
 ```
 
-Default metric should be ROC AUC. Accept either:
+For CatBoost, pass categorical column names or indices and fill missing categories as strings.
 
-- string metric names like `"roc_auc"`
-- callables like `roc_auc_score`
+## Baseline models
 
-## Feature Importances
+Implement at least these, depending on installed packages:
 
-Use model-based importances only.
+1. `HistGradientBoostingClassifier`
+2. `XGBClassifier` if available
+3. `CatBoostClassifier` if available
+4. `LGBMClassifier` if available
 
-Supported extraction order:
+Recommended first model:
 
-1. `model.feature_importances_`
-2. `model.coef_`
-3. no importances if neither exists
+```python
+if HAS_XGB:
+    model = XGBClassifier(
+        n_estimators=1200,
+        learning_rate=0.03,
+        max_depth=5,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        min_child_weight=20,
+        reg_lambda=5.0,
+        objective="binary:logistic",
+        eval_metric="auc",
+        tree_method="hist",
+        random_state=42,
+        n_jobs=-1,
+    )
+```
 
-For coefficients:
+CatBoost candidate:
 
-- flatten binary classifier coefficients
-- use absolute values by default
-- preserve signs only if an explicit option is added later
+```python
+if HAS_CAT:
+    model = CatBoostClassifier(
+        iterations=1500,
+        learning_rate=0.03,
+        depth=6,
+        loss_function="Logloss",
+        eval_metric="AUC",
+        random_seed=42,
+        verbose=200,
+        allow_writing_files=False,
+    )
+```
 
-Return feature importances as a pandas DataFrame when feature names are available:
+LightGBM candidate:
+
+```python
+if HAS_LGBM:
+    model = LGBMClassifier(
+        n_estimators=2000,
+        learning_rate=0.025,
+        num_leaves=64,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_lambda=5.0,
+        objective="binary",
+        random_state=42,
+        n_jobs=-1,
+    )
+```
+
+## Cross-validation helper
+
+Write a generic helper returning out-of-fold predictions, test predictions, and fold scores.
+
+Pseudo-code:
+
+```python
+def run_cv_sklearn_model(model, X, y, X_test, splits, preprocess=None):
+    oof = np.zeros(len(X))
+    test_pred = np.zeros(len(X_test))
+    scores = []
+
+    for fold, (tr_idx, va_idx) in enumerate(splits, 1):
+        X_tr, X_va = X.iloc[tr_idx], X.iloc[va_idx]
+        y_tr, y_va = y.iloc[tr_idx], y.iloc[va_idx]
+
+        if preprocess is not None:
+            clf = make_pipeline(preprocess, model)
+        else:
+            clf = clone(model)
+
+        clf.fit(X_tr, y_tr)
+        va_pred = clf.predict_proba(X_va)[:, 1]
+        te_pred = clf.predict_proba(X_test)[:, 1]
+
+        oof[va_idx] = va_pred
+        test_pred += te_pred / len(splits)
+
+        score = roc_auc_score(y_va, va_pred)
+        scores.append(score)
+        print(f"Fold {fold}: {score:.6f}")
+
+    print(f"CV mean: {np.mean(scores):.6f} +/- {np.std(scores):.6f}")
+    return oof, test_pred, scores
+```
+
+Remember to import:
+
+```python
+from sklearn.base import clone
+```
+
+## Submission
+
+Use the model's averaged test probabilities.
+
+```python
+submission = sample_sub.copy()
+submission[TARGET] = np.clip(test_pred, 0, 1)
+submission.to_csv("submission.csv", index=False)
+display(submission.head())
+print(submission.shape)
+```
+
+Check:
+
+```python
+assert list(submission.columns) == list(sample_sub.columns)
+assert len(submission) == len(sample_sub)
+assert submission[TARGET].between(0, 1).all()
+```
+
+## Experiments to include as TODOs
+
+Add a final markdown cell with next experiments:
+
+- Compare random `StratifiedKFold` vs `GroupKFold` by `Race`.
+- Add fold-safe target encodings for `Driver`, `Race`, `Compound`, and interactions like `Driver_Compound`, `Race_Compound`.
+- Add sequence/history features by sorting within `Race`, `Driver`, `Stint`, and `LapNumber`, if those columns exist.
+- Add rolling or lag features only when they would be available at prediction time.
+- Try probability calibration only if validation improves.
+- Blend XGBoost, CatBoost, and LightGBM using simple weighted averages.
+- Inspect high-probability predictions by lap/stint to catch obviously impossible patterns.
+- If using the original public F1 strategy dataset, keep it optional and document whether it is allowed by competition rules.
+
+## Important guardrails
+
+- Do not optimize directly on the public leaderboard.
+- Do not create features using `PitNextLap` outside fold-safe validation.
+- Do not globally target-encode categories before CV.
+- Do not assume row order is meaningful unless verified by columns like `Race`, `Driver`, `LapNumber`, and `Stint`.
+- Always generate a valid `submission.csv`.
+- Keep the notebook runnable top-to-bottom.
+- Prefer simple, correct CV over clever leakage-prone features.
+
+## Deliverable
+
+Create a notebook named:
 
 ```text
-feature | importance | rank
+s6e5_f1_pit_stop_baseline.ipynb
 ```
 
-Do not implement permutation importances in the base class.
-
-## Sample Weights
-
-Implement covariate-shift weights using adversarial probabilities:
-
-```python
-p = np.clip(p_test_domain, eps, 1 - eps)
-w = p / (1 - p)
-```
-
-The weights should be calculated for original train rows only.
-
-Recommended options:
-
-```python
-compute_sample_weights=True
-weight_clip=(0.01, 100.0)
-normalize_weights=True
-```
-
-If normalized, scale weights to have mean `1.0`.
-
-## Expected Attributes
-
-At minimum, `AdversarialValidator.fit(...)` should populate:
-
-```python
-self.model_
-self.models_
-self.score_
-self.fold_scores_
-self.oof_proba_
-self.oof_train_proba_
-self.oof_test_proba_
-self.test_proba_
-self.sample_weights_
-self.feature_importances_
-self.n_train_
-self.n_test_
-self.feature_names_in_
-```
-
-Use `None` for unavailable optional outputs rather than failing silently.
-
-## Package Structure
-
-Target structure:
+It should run end-to-end on Kaggle and write:
 
 ```text
-advnt/
-├── AGENTS.md
-├── README.md
-├── pyproject.toml
-├── src/
-│   └── advnt/
-│       ├── __init__.py
-│       ├── validation.py
-│       ├── weights.py
-│       ├── importances.py  # includes SHAP diagnostics helpers
-│       ├── ssl.py
-│       ├── changepoint.py
-│       ├── neutralization.py
-│       ├── models.py
-│       └── utils.py
-└── tests/
-    ├── test_validation.py
-    ├── test_weights.py
-    ├── test_importances.py
-    ├── test_ssl.py
-    └── test_changepoint.py
+submission.csv
 ```
-
-Keep the base class in `validation.py`. Put small pure helpers in separate modules only when they are independently testable.
-
-## Implementation Priorities
-
-### Phase 1: Core AV Estimator
-
-Implement:
-
-- `AdversarialValidator`
-- CV scoring
-- OOF probabilities
-- final model fit
-- model-based feature importances
-- density-ratio sample weights
-- pandas/numpy support
-- unit tests
-
-### Phase 2: Utility APIs
-
-Implement:
-
-```python
-make_adversarial_dataset(X_train, X_test)
-compute_density_ratio_weights(proba, eps=1e-6, clip=None, normalize=True)
-extract_model_importances(model, feature_names=None)
-select_safe_pseudo_labels(test_proba, threshold=0.1)
-```
-
-### Phase 3: Drift Modules
-
-Implement:
-
-- rolling-window adversarial validation for time series
-- changepoint score curves
-- feature neutralization via residualization
-- SHAP diagnostics as optional dependency (in `importances.py`)
-
-### Phase 4: Optional Advanced Modules
-
-Only after the tabular API is stable:
-
-- PyTorch gradient reversal layer
-- domain-adversarial neural network helpers
-- representation-level domain invariance utilities
-
-## Coding Style
-
-Use simple, readable Python.
-
-Prefer this:
-
-```python
-p = np.clip(proba, eps, 1 - eps)
-weights = p / (1 - p)
-```
-
-Avoid unnecessarily abstract class hierarchies.
-
-Avoid broad exception swallowing.
-
-Keep public functions typed, but do not let typing make the code noisy.
-
-Use numpy, pandas, and sklearn as the core dependency stack.
-
-Optional dependencies should stay optional:
-
-- `shap` (used by helpers in `importances.py`)
-- `lightgbm`
-- `xgboost`
-- `torch`
-
-Do not require optional dependencies for the base test suite.
-
-## Testing Expectations
-
-Tests should cover:
-
-- sklearn-like constructor behavior
-- `.fit(...)` returns `self`
-- attributes exist after fit
-- pandas feature names are preserved
-- numpy inputs work
-- fold scores have the expected length
-- ROC AUC is high on intentionally shifted synthetic data
-- ROC AUC is near random on matched synthetic data
-- sample weights are finite and normalized when requested
-- feature importances work for tree models
-- coefficient importances work for linear models
-- unsupported models return `None` importances
-
-Use small synthetic datasets. Tests should run quickly.
-
-Example synthetic drift setup:
-
-```python
-rng = np.random.default_rng(42)
-X_train = pd.DataFrame({
-    "stable": rng.normal(0, 1, 200),
-    "shifted": rng.normal(0, 1, 200),
-})
-X_test = pd.DataFrame({
-    "stable": rng.normal(0, 1, 200),
-    "shifted": rng.normal(2, 1, 200),
-})
-```
-
-The adversarial model should identify `shifted` as important.
-
-## Documentation Expectations
-
-README should include:
-
-- what adversarial validation is
-- quickstart example
-- interpreting AV AUC
-- sample-weighting example
-- feature-importance example
-- safe pseudo-labeling example
-- warning that AV detects covariate shift, not target leakage by itself
-
-Suggested quickstart:
-
-```python
-from advnt import AdversarialValidator
-
-av = AdversarialValidator(random_state=42)
-av.fit(X_train, X_test)
-
-print(av.score_)
-print(av.feature_importances_.head())
-
-model.fit(X_train, y_train, sample_weight=av.sample_weights_)
-```
-
-## Design Principles
-
-- The adversarial classifier is a reusable source of signal, not just a diagnostic score.
-- The base estimator should expose artifacts downstream tools need.
-- Keep defaults useful, but allow advanced users to pass their own model, CV splitter, and metric.
-- Make tabular workflows excellent before expanding to neural workflows.
-- Treat pandas support as first-class.
-- Avoid magic behavior that surprises sklearn users.
-
-## Do Not Do
-
-- Do not add permutation importances to the base class.
-- Do not make SHAP a required dependency.
-- Do not make PyTorch a required dependency.
-- Do not hide the adversarial probabilities from users.
-- Do not drop shifted features automatically.
-- Do not mutate `X_train` or `X_test`.
-- Do not silently ignore CV/model incompatibilities.
-- Do not build a CLI before the Python API is stable.
-
-## Useful Interpretive Guidelines
-
-Approximate AV AUC interpretation:
-
-```text
-0.50 - 0.55: little detectable train/test shift
-0.55 - 0.70: mild to moderate shift
-0.70 - 0.85: strong shift
-0.85 - 1.00: severe shift or possible split artifact
-```
-
-These are heuristics, not universal rules. The package should expose the evidence, not pretend to make domain decisions automatically.
-
-## Codex Task Guidance
-
-When implementing a task:
-
-1. Start from the smallest testable change.
-2. Add or update tests in the same commit.
-3. Keep the public API stable unless the task explicitly changes it.
-4. Prefer pure helper functions for math-heavy pieces.
-5. Keep estimator state explicit and inspectable.
-6. Run the relevant tests before finishing.
-7. Update README examples when behavior changes.
-
-## First Milestone
-
-A successful first milestone is:
-
-```python
-from advnt import AdversarialValidator
-
-av = AdversarialValidator(random_state=42)
-av.fit(X_train, X_test)
-
-assert 0 <= av.score_ <= 1
-assert av.oof_train_proba_.shape[0] == len(X_train)
-assert av.test_proba_.shape[0] == len(X_test)
-assert av.sample_weights_.shape[0] == len(X_train)
-```
-
-Once this works cleanly, build the higher-level ADVNT modules around it.
