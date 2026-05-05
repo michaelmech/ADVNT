@@ -43,6 +43,23 @@ safe = select_safe_pseudo_labels_from_train_test(X_train, X_test, threshold=0.1)
 importances = extract_model_importances_from_train_test(X_train, X_test)
 ```
 
+## Drift neutralization
+
+`neutralize_train_test_drift` residualizes selected features against a generated
+train/test indicator and optional predictor features. It returns train and test
+residual blocks for the requested columns:
+
+```python
+from advnt import neutralize_train_test_drift
+
+train_resid, test_resid = neutralize_train_test_drift(
+    X_train,
+    X_test,
+    features=["shifted_feature"],
+    model_features=["stable_context_feature"],
+)
+```
+
 ## Streamlit app
 
 An interactive Streamlit app is included for adversarial validation diagnostics.
