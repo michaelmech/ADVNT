@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "advnt"
+version = "0.1.0"
+description = "Adversarial validation and drift-aware machine learning workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "ADVNT contributors" },
+]
+keywords = [
+    "adversarial-validation",
+    "covariate-shift",
+    "drift-detection",
+    "machine-learning",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "lightgbm",
+]
+
+[project.optional-dependencies]
+app = [
+    "matplotlib",
+    "pyarrow",
+    "shap",
+    "streamlit",
+]
+dev = [
+    "pytest",
+]
+shap = [
+    "shap",
+]
+torch = [
+    "torch",
+]
+all = [
+    "matplotlib",
+    "pyarrow",
+    "pytest",
+    "shap",
+    "streamlit",
+    "torch",
+]
+
+[project.urls]
+Homepage = "https://github.com/michaelmech/ADVNT"
+Repository = "https://github.com/michaelmech/ADVNT"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
