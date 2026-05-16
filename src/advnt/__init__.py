@@ -7,6 +7,7 @@ from .sample_weights import (
     compute_density_ratio_weights_from_train_test,
 )
 from .neutralization import neutralize_features, neutralize_train_test_drift
+from .regimes import infer_test_regimes
 from .ssl import (
     select_safe_pseudo_labels,
     select_safe_pseudo_labels_from_train_test,
@@ -30,6 +31,7 @@ __all__ = [
     "compute_density_ratio_weights_from_train_test",
     "neutralize_features",
     "neutralize_train_test_drift",
+    "infer_test_regimes",
     "select_safe_pseudo_labels",
     "select_safe_pseudo_labels_from_train_test",
     "run_adversarial_validation_workflow",
